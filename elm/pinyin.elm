@@ -7,6 +7,7 @@ import StartApp
 import Dict exposing (Dict)
 import List
 import String
+import Array
 import Regex exposing (Regex)
 
 main =
@@ -20,37 +21,92 @@ main =
 
 -- MODEL
 
+type alias Sentence =
+  {
+    chinese : String,
+    pinyin  : String
+  }
+
 type alias Model =
   { 
-    sentenceChinese : String,
-    sentencePinyin : String,
-    answersSoFar : List Int
+    currentSentenceIdx : Int,
+    currentAnswer : List Int,
+    workset : List Sentence,
+    answers : List (List Int)
   }
 
 init : Model
 init = 
   {
-    sentenceChinese = "先生，您貴姓？",
-    sentencePinyin = "xīan shēng nín guì xìng",
-    answersSoFar = [1, 1, 2, 3]
+    currentSentenceIdx = 0,
+    currentAnswer = [],
+    workset = [
+      {
+        chinese = "先生，您貴姓？",
+        pinyin  = "xīan shēng nín guì xìng"
+      },
+      {
+        chinese = "他姓什麼？叫什麼名字？是哪國人？",
+        pinyin  = "tā xìng shén me jiào shén me míng zi shì nǎ guó rén"
+      },
+      {
+        chinese = "我是中國人，你是美國人，她呢？",
+        pinyin  = "wǒ shì zhōng guó rén nǐ shì měi guó rén tā ne"
+      },
+      {
+        chinese = "我姓王，不姓李，誰姓李？",
+        pinyin  = "wǒ xìng wáng bú xìng lǐ shéi xìng lǐ"
+      },
+      {
+        chinese = "王先生，你好，你是英國人嗎？",
+        pinyin  = "wáng xiān sheng nǐ hǎo nǐ shì yīng guó rén ma"
+      }
+    ]
   }
 
--- UPDATE
 
-type Action = Increment | Decrement
+-- CHARACTER MODEL
 
-update : Action -> Model -> Model
-update action model = model
-
-
--- VIEW
-
-view : Signal.Address Action -> Model -> Html
-view address model =
-  div [ Html.Attributes.class "chineseSentence" ] (chineseSentenceView model)
+type alias CharacterModel = {
+  chinese : String,
+  pinyin  : Maybe String,
+  answer  : Maybe Int
+}
 
 containsRegex : String -> String -> Bool
 containsRegex r w = Regex.contains (Regex.regex r) w
+
+-- This is a helper method which removes punctuation from the input string and returns a list
+-- of valid hanzi characters.  This is used to match the input string with the pinyin string, which does not
+-- include the same punctuation.
+-- e.g If we have the string "你好！你好嗎？", the output will be [0, 1, 3, 4, 5].
+validHanziIndexList : String -> List Int
+validHanziIndexList chinese =
+  let indexedChineseSentenceList = List.indexedMap (,) (String.split "" chinese)
+      filteredList = List.filter (\ (i, w) -> not (containsRegex "[，？。.,?a-zA-Z]" w)) indexedChineseSentenceList
+  in  List.map (\ (i, w) -> i) filteredList
+
+sentenceModel : Sentence -> List Int -> List CharacterModel
+sentenceModel sentence answer = 
+  let hanziIndexList = validHanziIndexList sentence.chinese
+      hanziIndexAndPinyin = Dict.fromList (List.map2 (,) hanziIndexList (List.indexedMap (,) (String.words sentence.pinyin)))
+      indexedAnswers = Dict.fromList (List.indexedMap (,) answer)
+  in List.indexedMap (\ i c -> case Dict.get i hanziIndexAndPinyin of
+                                 Nothing       -> { 
+                                                    chinese = c,
+                                                    pinyin = Nothing,
+                                                    answer = Nothing
+                                                  }
+                                 Just (idx, p) -> { 
+                                                    chinese = c,
+                                                    pinyin = Just p,
+                                                    answer = (Dict.get idx indexedAnswers)
+                                                  }
+                     ) (String.split "" sentence.chinese)
+
+-- GRADE
+
+type Grade = Correct | Incorrect | NotGraded | DoNotGrade
 
 pinyinToTone : String -> Int
 pinyinToTone word =
@@ -60,56 +116,56 @@ pinyinToTone word =
      | containsRegex "[àèìòùǜÀÈÌÒÙǛ]" word  -> 4
      | otherwise                            -> 0
 
--- This is a helper method which removes punctuation from the input string and returns a list
--- of valid hanzi characters.  This is used to match the input string with the pinyin string, which does not
--- include the same punctuation.
--- e.g If we have the string "你好！你好嗎？", the output will be [0, 1, 3, 4, 5].
-validHanziIndexList : String -> List Int
-validHanziIndexList sentenceChinese =
-  let indexedChineseSentenceList = (List.indexedMap (,) (String.split "" sentenceChinese))
-      filteredList = List.filter (\ (i, w) -> not (containsRegex "[，？。.,?]" w)) indexedChineseSentenceList
-  in  List.map (\ (i, w) -> i) filteredList
-
--- This is a helper method which takes a dictionary of indexes to corrections, and returns a list of
--- characters to their corrections.  True is correct, False is wrong, and Nothing means it either
--- can't be graded or hasn't been graded yet.
-correctedChineseSentence : Dict Int (Maybe Bool) -> String -> List (String, Maybe Bool)
-correctedChineseSentence correctAnswers sentencePinyin = 
-  List.indexedMap (findCorrectedAnswer correctAnswers) (String.split "" sentencePinyin)
-
--- This annotates each character with whether it's correct (Just True), false (Just False), or not
--- corrected yet.
-findCorrectedAnswer : Dict Int (Maybe Bool) -> Int -> String -> (String, Maybe Bool)
-findCorrectedAnswer dict i str =
-  let maybe = Dict.get i dict
-  in case maybe of
-       Nothing           -> (str, Nothing)
-       Just Nothing      -> (str, Nothing)
-       Just (Just True)  -> (str, Just True)
-       Just (Just False) -> (str, Just False)
-
-htmlForCharacterCorrections : (String, Maybe Bool) -> Html
-htmlForCharacterCorrections (s, maybe) =
-  let className = case maybe of
-                    Nothing    -> "nothing"
-                    Just True  -> "correct"
-                    Just False -> "wrong"
-  in span [Html.Attributes.class className] [text s]
-
-correctedAnswersSoFar : Model -> Dict Int Bool
-correctedAnswersSoFar model =
-  let pinyinWords = String.words model.sentencePinyin
-      pinyinTones = List.map pinyinToTone pinyinWords
-      correctAnswers = List.map2 (\ a b -> a == b) model.answersSoFar pinyinTones
-  in Dict.fromList (List.indexedMap (,) correctAnswers)
-
-chineseSentenceView : Model -> List Html
-chineseSentenceView model =
-  let correctedAnswersSoFarDict = correctedAnswersSoFar model
-      hanziIndexList = validHanziIndexList model.sentenceChinese
-      hanziIndexCorrectionList = List.indexedMap (\ i p -> (p, Dict.get i correctedAnswersSoFarDict)) hanziIndexList
-      hanziIndexCorrectectionDict = Dict.fromList hanziIndexCorrectionList
-      characterCorrectionList = correctedChineseSentence hanziIndexCorrectectionDict model.sentenceChinese
-  in  List.map htmlForCharacterCorrections characterCorrectionList
+grade : CharacterModel -> Grade
+grade characterModel =
+  case characterModel.pinyin of
+    Nothing -> DoNotGrade
+    Just p  -> case characterModel.answer of
+                 Nothing -> NotGraded
+                 Just a  -> if (pinyinToTone p) == a then Correct else Incorrect
 
 
+-- UPDATE
+
+type Action = InputPinyin Int | NoAction
+
+update : Action -> Model -> Model
+update action model =
+  case action of
+    NoAction          -> model
+    InputPinyin tone -> {
+                          currentAnswer      = List.append model.currentAnswer [tone],
+                          workset            = model.workset,
+                          currentSentenceIdx = model.currentSentenceIdx
+                        }
+
+
+-- VIEW
+
+view : Signal.Address Action -> Model -> Html
+view address model =
+  let onKeyPress = Html.Events.onKeyDown address (\ i -> if  | i == 0x31 -> InputPinyin 1
+                                                             | i == 0x32 -> InputPinyin 2
+                                                             | i == 0x33 -> InputPinyin 3
+                                                             | i == 0x34 -> InputPinyin 4
+                                                             | i == 0x30 -> InputPinyin 0
+                                                             | otherwise -> NoAction
+                                                  )
+  in div [ Html.Attributes.class "chineseSentence", onKeyPress, Html.Attributes.tabindex 0] (sentenceView model)
+
+sentenceView : Model -> List Html
+sentenceView model =
+  let  sentence = (Array.get model.currentSentenceIdx (Array.fromList model.workset))
+       sModel = case sentence of
+                  Nothing -> []  -- If we have an invalid index, we'll display nothing
+                  Just s  -> sentenceModel s model.currentAnswer
+  in List.map characterModelToHtml sModel
+
+characterModelToHtml : CharacterModel -> Html
+characterModelToHtml characterModel =
+  let className = case grade characterModel of
+                    Correct    -> "correct"
+                    Incorrect  -> "incorrect"
+                    NotGraded  -> "not_graded"
+                    DoNotGrade -> "do_not_grade"
+  in span [Html.Attributes.class className] [text characterModel.chinese]

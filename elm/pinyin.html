@@ -7667,6 +7667,136 @@ Elm.Native.Port.make = function(localRuntime) {
 		outboundSignal: outboundSignal
 	};
 };
+Elm.Native.Regex = {};
+Elm.Native.Regex.make = function(localRuntime) {
+	localRuntime.Native = localRuntime.Native || {};
+	localRuntime.Native.Regex = localRuntime.Native.Regex || {};
+	if (localRuntime.Native.Regex.values)
+	{
+		return localRuntime.Native.Regex.values;
+	}
+	if ('values' in Elm.Native.Regex)
+	{
+		return localRuntime.Native.Regex.values = Elm.Native.Regex.values;
+	}
+
+	var List = Elm.Native.List.make(localRuntime);
+	var Maybe = Elm.Maybe.make(localRuntime);
+
+	function escape(str)
+	{
+		return str.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+	}
+	function caseInsensitive(re)
+	{
+		return new RegExp(re.source, 'gi');
+	}
+	function regex(raw)
+	{
+		return new RegExp(raw, 'g');
+	}
+
+	function contains(re, string)
+	{
+		return string.match(re) !== null;
+	}
+
+	function find(n, re, str)
+	{
+		n = n.ctor === "All" ? Infinity : n._0;
+		var out = [];
+		var number = 0;
+		var string = str;
+		var lastIndex = re.lastIndex;
+		var prevLastIndex = -1;
+		var result;
+		while (number++ < n && (result = re.exec(string)))
+		{
+			if (prevLastIndex === re.lastIndex) break;
+			var i = result.length - 1;
+			var subs = new Array(i);
+			while (i > 0)
+			{
+				var submatch = result[i];
+				subs[--i] = submatch === undefined
+					? Maybe.Nothing
+					: Maybe.Just(submatch);
+			}
+			out.push({
+				_:{},
+				match: result[0],
+				submatches: List.fromArray(subs),
+				index: result.index,
+				number: number
+			});
+			prevLastIndex = re.lastIndex;
+		}
+		re.lastIndex = lastIndex;
+		return List.fromArray(out);
+	}
+
+	function replace(n, re, replacer, string)
+	{
+		n = n.ctor === "All" ? Infinity : n._0;
+		var count = 0;
+		function jsReplacer(match)
+		{
+			if (count++ > n)
+			{
+				return match;
+			}
+			var i = arguments.length-3;
+			var submatches = new Array(i);
+			while (i > 0)
+			{
+				var submatch = arguments[i];
+				submatches[--i] = submatch === undefined
+					? Maybe.Nothing
+					: Maybe.Just(submatch);
+			}
+			return replacer({
+				_:{},
+				match:match,
+				submatches:List.fromArray(submatches),
+				index:arguments[i-1],
+				number:count
+			});
+		}
+		return string.replace(re, jsReplacer);
+	}
+
+	function split(n, re, str)
+	{
+		n = n.ctor === "All" ? Infinity : n._0;
+		if (n === Infinity)
+		{
+			return List.fromArray(str.split(re));
+		}
+		var string = str;
+		var result;
+		var out = [];
+		var start = re.lastIndex;
+		while (n--)
+		{
+			if (!(result = re.exec(string))) break;
+			out.push(string.slice(start, result.index));
+			start = re.lastIndex;
+		}
+		out.push(string.slice(start));
+		return List.fromArray(out);
+	}
+
+	return Elm.Native.Regex.values = {
+		regex: regex,
+		caseInsensitive: caseInsensitive,
+		escape: escape,
+
+		contains: F2(contains),
+		find: F3(find),
+		replace: F4(replace),
+		split: F3(split)
+	};
+};
 
 if (!Elm.fullscreen) {
 
@@ -12287,38 +12417,272 @@ Elm.PinyinApp.make = function (_elm) {
    _U = _N.Utils.make(_elm),
    _L = _N.List.make(_elm),
    $moduleName = "PinyinApp",
+   $Array = Elm.Array.make(_elm),
    $Basics = Elm.Basics.make(_elm),
+   $Dict = Elm.Dict.make(_elm),
    $Html = Elm.Html.make(_elm),
    $Html$Attributes = Elm.Html.Attributes.make(_elm),
+   $Html$Events = Elm.Html.Events.make(_elm),
    $List = Elm.List.make(_elm),
    $Maybe = Elm.Maybe.make(_elm),
+   $Regex = Elm.Regex.make(_elm),
    $Result = Elm.Result.make(_elm),
    $Signal = Elm.Signal.make(_elm),
-   $StartApp = Elm.StartApp.make(_elm);
-   var view = F2(function (address,
-   model) {
-      return A2($Html.div,
-      _L.fromArray([$Html$Attributes.$class("address")]),
-      _L.fromArray([$Html.text(model.sentenceChinese)
-                   ,$Html.text(model.sentencePinyin)]));
-   });
+   $StartApp = Elm.StartApp.make(_elm),
+   $String = Elm.String.make(_elm);
    var update = F2(function (action,
    model) {
-      return model;
+      return function () {
+         switch (action.ctor)
+         {case "InputPinyin":
+            return {_: {}
+                   ,currentAnswer: A2($List.append,
+                   model.currentAnswer,
+                   _L.fromArray([action._0]))
+                   ,currentSentenceIdx: model.currentSentenceIdx
+                   ,workset: model.workset};
+            case "NoAction": return model;}
+         _U.badCase($moduleName,
+         "between lines 133 and 139");
+      }();
    });
-   var Decrement = {ctor: "Decrement"};
-   var Increment = {ctor: "Increment"};
+   var NoAction = {ctor: "NoAction"};
+   var InputPinyin = function (a) {
+      return {ctor: "InputPinyin"
+             ,_0: a};
+   };
+   var DoNotGrade = {ctor: "DoNotGrade"};
+   var NotGraded = {ctor: "NotGraded"};
+   var Incorrect = {ctor: "Incorrect"};
+   var Correct = {ctor: "Correct"};
+   var containsRegex = F2(function (r,
+   w) {
+      return A2($Regex.contains,
+      $Regex.regex(r),
+      w);
+   });
+   var validHanziIndexList = function (chinese) {
+      return function () {
+         var indexedChineseSentenceList = A2($List.indexedMap,
+         F2(function (v0,v1) {
+            return {ctor: "_Tuple2"
+                   ,_0: v0
+                   ,_1: v1};
+         }),
+         A2($String.split,"",chinese));
+         var filteredList = A2($List.filter,
+         function (_v2) {
+            return function () {
+               switch (_v2.ctor)
+               {case "_Tuple2":
+                  return $Basics.not(A2(containsRegex,
+                    "[，？。.,?a-zA-Z]",
+                    _v2._1));}
+               _U.badCase($moduleName,
+               "on line 85, column 47 to 84");
+            }();
+         },
+         indexedChineseSentenceList);
+         return A2($List.map,
+         function (_v6) {
+            return function () {
+               switch (_v6.ctor)
+               {case "_Tuple2": return _v6._0;}
+               _U.badCase($moduleName,
+               "on line 86, column 29 to 30");
+            }();
+         },
+         filteredList);
+      }();
+   };
+   var sentenceModel = F2(function (sentence,
+   answer) {
+      return function () {
+         var indexedAnswers = $Dict.fromList(A2($List.indexedMap,
+         F2(function (v0,v1) {
+            return {ctor: "_Tuple2"
+                   ,_0: v0
+                   ,_1: v1};
+         }),
+         answer));
+         var hanziIndexList = validHanziIndexList(sentence.chinese);
+         var hanziIndexAndPinyin = $Dict.fromList(A3($List.map2,
+         F2(function (v0,v1) {
+            return {ctor: "_Tuple2"
+                   ,_0: v0
+                   ,_1: v1};
+         }),
+         hanziIndexList,
+         A2($List.indexedMap,
+         F2(function (v0,v1) {
+            return {ctor: "_Tuple2"
+                   ,_0: v0
+                   ,_1: v1};
+         }),
+         $String.words(sentence.pinyin))));
+         return A2($List.indexedMap,
+         F2(function (i,c) {
+            return function () {
+               var _v10 = A2($Dict.get,
+               i,
+               hanziIndexAndPinyin);
+               switch (_v10.ctor)
+               {case "Just":
+                  switch (_v10._0.ctor)
+                    {case "_Tuple2": return {_: {}
+                                            ,answer: A2($Dict.get,
+                                            _v10._0._0,
+                                            indexedAnswers)
+                                            ,chinese: c
+                                            ,pinyin: $Maybe.Just(_v10._0._1)};}
+                    break;
+                  case "Nothing": return {_: {}
+                                         ,answer: $Maybe.Nothing
+                                         ,chinese: c
+                                         ,pinyin: $Maybe.Nothing};}
+               _U.badCase($moduleName,
+               "between lines 93 and 104");
+            }();
+         }),
+         A2($String.split,
+         "",
+         sentence.chinese));
+      }();
+   });
+   var pinyinToTone = function (word) {
+      return A2(containsRegex,
+      "[āēīōūǖĀĒĪŌŪǕ]",
+      word) ? 1 : A2(containsRegex,
+      "[áéíóúǘÁÉÍÓÚǗ]",
+      word) ? 2 : A2(containsRegex,
+      "[ǎěǐǒǔǚǍĚǏǑǓǙ]",
+      word) ? 3 : A2(containsRegex,
+      "[àèìòùǜÀÈÌÒÙǛ]",
+      word) ? 4 : 0;
+   };
+   var grade = function (characterModel) {
+      return function () {
+         var _v14 = characterModel.pinyin;
+         switch (_v14.ctor)
+         {case "Just":
+            return function () {
+                 var _v16 = characterModel.answer;
+                 switch (_v16.ctor)
+                 {case "Just":
+                    return _U.eq(pinyinToTone(_v14._0),
+                      _v16._0) ? Correct : Incorrect;
+                    case "Nothing":
+                    return NotGraded;}
+                 _U.badCase($moduleName,
+                 "between lines 122 and 124");
+              }();
+            case "Nothing":
+            return DoNotGrade;}
+         _U.badCase($moduleName,
+         "between lines 120 and 124");
+      }();
+   };
+   var characterModelToHtml = function (characterModel) {
+      return function () {
+         var className = function () {
+            var _v18 = grade(characterModel);
+            switch (_v18.ctor)
+            {case "Correct":
+               return "correct";
+               case "DoNotGrade":
+               return "do_not_grade";
+               case "Incorrect":
+               return "incorrect";
+               case "NotGraded":
+               return "not_graded";}
+            _U.badCase($moduleName,
+            "between lines 165 and 170");
+         }();
+         return A2($Html.span,
+         _L.fromArray([$Html$Attributes.$class(className)]),
+         _L.fromArray([$Html.text(characterModel.chinese)]));
+      }();
+   };
+   var sentenceView = function (model) {
+      return function () {
+         var sentence = A2($Array.get,
+         model.currentSentenceIdx,
+         $Array.fromList(model.workset));
+         var sModel = function () {
+            switch (sentence.ctor)
+            {case "Just":
+               return A2(sentenceModel,
+                 sentence._0,
+                 model.currentAnswer);
+               case "Nothing":
+               return _L.fromArray([]);}
+            _U.badCase($moduleName,
+            "between lines 158 and 161");
+         }();
+         return A2($List.map,
+         characterModelToHtml,
+         sModel);
+      }();
+   };
+   var view = F2(function (address,
+   model) {
+      return function () {
+         var onKeyPress = A2($Html$Events.onKeyDown,
+         address,
+         function (i) {
+            return _U.eq(i,
+            49) ? InputPinyin(1) : _U.eq(i,
+            50) ? InputPinyin(2) : _U.eq(i,
+            51) ? InputPinyin(3) : _U.eq(i,
+            52) ? InputPinyin(4) : _U.eq(i,
+            48) ? InputPinyin(0) : NoAction;
+         });
+         return A2($Html.div,
+         _L.fromArray([$Html$Attributes.$class("chineseSentence")
+                      ,onKeyPress
+                      ,$Html$Attributes.tabindex(0)]),
+         sentenceView(model));
+      }();
+   });
+   var CharacterModel = F3(function (a,
+   b,
+   c) {
+      return {_: {}
+             ,answer: c
+             ,chinese: a
+             ,pinyin: b};
+   });
    var init = {_: {}
-              ,answerSoFar: _L.fromArray([])
-              ,sentenceChinese: "先生，您貴姓？"
-              ,sentencePinyin: "xīan shēng nín guì xìng"};
+              ,currentAnswer: _L.fromArray([])
+              ,currentSentenceIdx: 0
+              ,workset: _L.fromArray([{_: {}
+                                      ,chinese: "先生，您貴姓？"
+                                      ,pinyin: "xīan shēng nín guì xìng"}
+                                     ,{_: {}
+                                      ,chinese: "他姓什麼？叫什麼名字？是哪國人？"
+                                      ,pinyin: "tā xìng shén me jiào shén me míng zi shì nǎ guó rén"}
+                                     ,{_: {}
+                                      ,chinese: "我是中國人，你是美國人，她呢？"
+                                      ,pinyin: "wǒ shì zhōng guó rén nǐ shì měi guó rén tā ne"}
+                                     ,{_: {}
+                                      ,chinese: "我姓王，不姓李，誰姓李？"
+                                      ,pinyin: "wǒ xìng wáng bú xìng lǐ shéi xìng lǐ"}
+                                     ,{_: {}
+                                      ,chinese: "王先生，你好，你是英國人嗎？"
+                                      ,pinyin: "wáng xiān sheng nǐ hǎo nǐ shì yīng guó rén ma"}])};
    var Model = F3(function (a,
    b,
    c) {
       return {_: {}
-             ,answerSoFar: c
-             ,sentenceChinese: a
-             ,sentencePinyin: b};
+             ,currentAnswer: b
+             ,currentSentenceIdx: a
+             ,workset: c};
+   });
+   var Sentence = F2(function (a,
+   b) {
+      return {_: {}
+             ,chinese: a
+             ,pinyin: b};
    });
    var main = $StartApp.start({_: {}
                               ,model: init
@@ -12326,13 +12690,74 @@ Elm.PinyinApp.make = function (_elm) {
                               ,view: view});
    _elm.PinyinApp.values = {_op: _op
                            ,main: main
+                           ,Sentence: Sentence
                            ,Model: Model
                            ,init: init
-                           ,Increment: Increment
-                           ,Decrement: Decrement
+                           ,CharacterModel: CharacterModel
+                           ,containsRegex: containsRegex
+                           ,validHanziIndexList: validHanziIndexList
+                           ,sentenceModel: sentenceModel
+                           ,Correct: Correct
+                           ,Incorrect: Incorrect
+                           ,NotGraded: NotGraded
+                           ,DoNotGrade: DoNotGrade
+                           ,pinyinToTone: pinyinToTone
+                           ,grade: grade
+                           ,InputPinyin: InputPinyin
+                           ,NoAction: NoAction
                            ,update: update
-                           ,view: view};
+                           ,view: view
+                           ,sentenceView: sentenceView
+                           ,characterModelToHtml: characterModelToHtml};
    return _elm.PinyinApp.values;
+};Elm.Regex = Elm.Regex || {};
+Elm.Regex.make = function (_elm) {
+   "use strict";
+   _elm.Regex = _elm.Regex || {};
+   if (_elm.Regex.values)
+   return _elm.Regex.values;
+   var _op = {},
+   _N = Elm.Native,
+   _U = _N.Utils.make(_elm),
+   _L = _N.List.make(_elm),
+   $moduleName = "Regex",
+   $Maybe = Elm.Maybe.make(_elm),
+   $Native$Regex = Elm.Native.Regex.make(_elm);
+   var split = $Native$Regex.split;
+   var replace = $Native$Regex.replace;
+   var find = $Native$Regex.find;
+   var AtMost = function (a) {
+      return {ctor: "AtMost"
+             ,_0: a};
+   };
+   var All = {ctor: "All"};
+   var Match = F4(function (a,
+   b,
+   c,
+   d) {
+      return {_: {}
+             ,index: c
+             ,match: a
+             ,number: d
+             ,submatches: b};
+   });
+   var contains = $Native$Regex.contains;
+   var caseInsensitive = $Native$Regex.caseInsensitive;
+   var regex = $Native$Regex.regex;
+   var escape = $Native$Regex.escape;
+   var Regex = {ctor: "Regex"};
+   _elm.Regex.values = {_op: _op
+                       ,regex: regex
+                       ,escape: escape
+                       ,caseInsensitive: caseInsensitive
+                       ,contains: contains
+                       ,find: find
+                       ,replace: replace
+                       ,split: split
+                       ,Match: Match
+                       ,All: All
+                       ,AtMost: AtMost};
+   return _elm.Regex.values;
 };Elm.Result = Elm.Result || {};
 Elm.Result.make = function (_elm) {
    "use strict";
