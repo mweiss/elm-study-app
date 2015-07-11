@@ -31,9 +31,19 @@ type alias Model =
   { 
     currentSentenceIdx : Int,
     currentAnswer : List Int,
-    workset : List Sentence,
-    answers : List (List Int)
+    workset : List Sentence
   }
+
+currentSentence : Model -> Maybe Sentence
+currentSentence model = (Array.get model.currentSentenceIdx (Array.fromList model.workset))
+
+isCurrentAnswerComplete : Model -> Bool
+isCurrentAnswerComplete model =
+  let ms = (currentSentence model)
+      currentSentenceLength = case ms of
+                                Nothing -> 0
+                                Just s -> (List.length (String.words s.pinyin))
+  in List.length model.currentAnswer >= currentSentenceLength 
 
 init : Model
 init = 
@@ -70,7 +80,8 @@ init =
 type alias CharacterModel = {
   chinese : String,
   pinyin  : Maybe String,
-  answer  : Maybe Int
+  answer  : Maybe Int,
+  selected : Bool
 }
 
 containsRegex : String -> String -> Bool
@@ -93,14 +104,16 @@ sentenceModel sentence answer =
       indexedAnswers = Dict.fromList (List.indexedMap (,) answer)
   in List.indexedMap (\ i c -> case Dict.get i hanziIndexAndPinyin of
                                  Nothing       -> { 
-                                                    chinese = c,
-                                                    pinyin = Nothing,
-                                                    answer = Nothing
+                                                    chinese  = c,
+                                                    pinyin   = Nothing,
+                                                    answer   = Nothing,
+                                                    selected = False
                                                   }
                                  Just (idx, p) -> { 
-                                                    chinese = c,
-                                                    pinyin = Just p,
-                                                    answer = (Dict.get idx indexedAnswers)
+                                                    chinese  = c,
+                                                    pinyin   = Just p,
+                                                    answer   = (Dict.get idx indexedAnswers),
+                                                    selected = (List.length answer) == idx
                                                   }
                      ) (String.split "" sentence.chinese)
 
@@ -127,18 +140,34 @@ grade characterModel =
 
 -- UPDATE
 
-type Action = InputPinyin Int | NoAction
+type Action = InputPinyin Int | NoAction | NextSentence
 
 update : Action -> Model -> Model
 update action model =
   case action of
     NoAction          -> model
-    InputPinyin tone -> {
-                          currentAnswer      = List.append model.currentAnswer [tone],
-                          workset            = model.workset,
-                          currentSentenceIdx = model.currentSentenceIdx
-                        }
+    NextSentence      -> updateNextSentence model
+    InputPinyin tone  -> updatePinyin tone model
 
+updatePinyin : Int -> Model -> Model
+updatePinyin tone model =
+  if isCurrentAnswerComplete model
+  then model
+  else {
+         currentAnswer      = List.append model.currentAnswer [tone],
+         workset            = model.workset,
+         currentSentenceIdx = model.currentSentenceIdx
+       }
+
+updateNextSentence : Model -> Model
+updateNextSentence model =
+  if isCurrentAnswerComplete model
+  then {
+          currentAnswer      = [],
+          workset            = model.workset,
+          currentSentenceIdx = (model.currentSentenceIdx + 1) % (List.length model.workset)
+        }
+  else model
 
 -- VIEW
 
@@ -149,14 +178,15 @@ view address model =
                                                              | i == 0x33 -> InputPinyin 3
                                                              | i == 0x34 -> InputPinyin 4
                                                              | i == 0x30 -> InputPinyin 0
+                                                             | i == 0x20 || i == 0x2F -> NextSentence
                                                              | otherwise -> NoAction
                                                   )
   in div [ Html.Attributes.class "chineseSentence", onKeyPress, Html.Attributes.tabindex 0] (sentenceView model)
 
 sentenceView : Model -> List Html
 sentenceView model =
-  let  sentence = (Array.get model.currentSentenceIdx (Array.fromList model.workset))
-       sModel = case sentence of
+  let sentence = currentSentence model
+      sModel = case sentence of
                   Nothing -> []  -- If we have an invalid index, we'll display nothing
                   Just s  -> sentenceModel s model.currentAnswer
   in List.map characterModelToHtml sModel
@@ -166,6 +196,7 @@ characterModelToHtml characterModel =
   let className = case grade characterModel of
                     Correct    -> "correct"
                     Incorrect  -> "incorrect"
-                    NotGraded  -> "not_graded"
-                    DoNotGrade -> "do_not_grade"
-  in span [Html.Attributes.class className] [text characterModel.chinese]
+                    NotGraded  -> "notGraded"
+                    DoNotGrade -> "doNotGrade"
+      classList = if characterModel.selected then [(className, True), ("selected", True)] else [(className, True)]
+  in span [Html.Attributes.classList classList] [text characterModel.chinese]
