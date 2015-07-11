@@ -3,21 +3,44 @@ module PinyinApp where
 import Html exposing (..)
 import Html.Attributes exposing (style)
 import Html.Events exposing (onClick)
-import StartApp
+import StartApp exposing (LoopbackFun)
 import Dict exposing (Dict)
 import List
 import String
 import Array
+import Time
 import Regex exposing (Regex)
+import Http exposing (Error)
+import Task exposing (Task)
 
 main =
+  fst viewsAndTasks
+
+port requests : Signal (Task Error ())
+port requests = snd viewsAndTasks
+
+externalActions : Signal Action
+externalActions = Signal.constant NoAction
+
+viewsAndTasks =
   StartApp.start
     { 
-      model = init,
+      initialState = init,
       update = update,
       view = view
     }
+    externalActions
 
+-- TEST HTTP
+
+testHttp : Task Error String
+testHttp = Http.getString "test.json"
+
+transformStringToAction : String -> Task Error Action
+transformStringToAction string = Task.succeed (TestHttp string)
+
+chainHttp : Task Error Action
+chainHttp = testHttp `Task.andThen` transformStringToAction
 
 -- MODEL
 
@@ -29,6 +52,7 @@ type alias Sentence =
 
 type alias Model =
   { 
+    testHttp : String,
     currentSentenceIdx : Int,
     currentSentence : List CharacterModel,
     workset : List Sentence
@@ -42,15 +66,14 @@ initModel model idx =
   let currentSentence = (Array.get idx (Array.fromList model.workset))
   in case currentSentence of
       Nothing ->  model
-      Just s  ->  {
-                    currentSentenceIdx = idx,
-                    currentSentence = initSentenceModel s,
-                    workset = model.workset
+      Just s  ->  { model | currentSentence <-  initSentenceModel s,
+                            currentSentenceIdx <- idx
                   }
 
 init : Model
 init = 
   initModel {
+              testHttp = "",
               currentSentenceIdx = 0,
               currentSentence = [], -- this will be properly initialized by initModel
               workset = [
@@ -143,24 +166,22 @@ grade characterModel =
 
 -- UPDATE
 
-type Action = InputPinyin Int | NoAction | NextSentence
+type Action = InputPinyin Int | NoAction | NextSentence | TestHttp String | TriggerHttp
 
-update : Action -> Model -> Model
-update action model =
+update : LoopbackFun Error Action -> Time.Time -> Action -> Model -> (Model, (Maybe (Task Error ())))
+update loopback t action model =
   case action of
-    NoAction          -> model
-    NextSentence      -> updateNextSentence model
-    InputPinyin tone  -> updatePinyin tone model
+    TriggerHttp       -> ({model | testHttp <- "triggered"}, Just (loopback chainHttp))
+    NoAction          -> (model, Nothing)
+    NextSentence      -> (updateNextSentence model, Nothing)
+    InputPinyin tone  -> (updatePinyin tone model, Nothing)
+    TestHttp s        -> ({ model | testHttp <- s}, Nothing)
 
 updatePinyin : Int -> Model -> Model
 updatePinyin tone model =
   if isCurrentAnswerComplete model
   then model
-  else {
-         currentSentence    = updateCurrentSentence model.currentSentence tone,
-         workset            = model.workset,
-         currentSentenceIdx = model.currentSentenceIdx
-       }
+  else { model | currentSentence <- updateCurrentSentence model.currentSentence tone }
 
 updateCurrentSentence : List CharacterModel -> Int -> List CharacterModel
 updateCurrentSentence sm tone =
@@ -170,15 +191,12 @@ updateCurrentSentence sm tone =
               Just s  -> s
   in case maybeCM of
       Nothing ->  []
-      Just cm ->  let newCM = {
-                                chinese  = cm.chinese,
-                                pinyin   = cm.pinyin,
-                                answers  = if cm.selected then tone :: cm.answers else cm.answers,
-                                selected = False
+      Just cm ->  let newCM = { cm |  answers <- if cm.selected then tone :: cm.answers else cm.answers,
+                                      selected <- False
                               }
                       cmGrade = grade newCM
                   in if cmGrade == NotGraded || cmGrade == Incorrect
-                     then { chinese = newCM.chinese, pinyin = newCM.pinyin, answers = newCM.answers, selected = True} :: tsm
+                     then { newCM | selected <- True } :: tsm
                      else newCM :: (updateCurrentSentence tsm tone)
 
 updateNextSentence : Model -> Model
@@ -198,9 +216,10 @@ view address model =
                                                              | i == 0x34 -> InputPinyin 4
                                                              | i == 0x30 -> InputPinyin 0
                                                              | i == 0x20 || i == 0x2F -> NextSentence
+                                                             | i == 67 -> TriggerHttp
                                                              | otherwise -> NoAction
                                                   )
-  in div [ Html.Attributes.class "chineseSentence", onKeyPress, Html.Attributes.tabindex 0] (sentenceView model)
+  in div [Html.Attributes.class "chineseSentence", onKeyPress, Html.Attributes.tabindex 0] (sentenceView model)
 
 sentenceView : Model -> List Html
 sentenceView model = List.map characterModelToHtml model.currentSentence
