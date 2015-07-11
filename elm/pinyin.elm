@@ -30,57 +30,60 @@ type alias Sentence =
 type alias Model =
   { 
     currentSentenceIdx : Int,
-    currentAnswer : List Int,
+    currentSentence : List CharacterModel,
     workset : List Sentence
   }
 
-currentSentence : Model -> Maybe Sentence
-currentSentence model = (Array.get model.currentSentenceIdx (Array.fromList model.workset))
-
 isCurrentAnswerComplete : Model -> Bool
-isCurrentAnswerComplete model =
-  let ms = (currentSentence model)
-      currentSentenceLength = case ms of
-                                Nothing -> 0
-                                Just s -> (List.length (String.words s.pinyin))
-  in List.length model.currentAnswer >= currentSentenceLength 
+isCurrentAnswerComplete model = List.isEmpty (List.filter (\cm -> cm.selected) model.currentSentence)
+
+initModel : Model -> Int -> Model
+initModel model idx = 
+  let currentSentence = (Array.get idx (Array.fromList model.workset))
+  in case currentSentence of
+      Nothing ->  model
+      Just s  ->  {
+                    currentSentenceIdx = idx,
+                    currentSentence = initSentenceModel s,
+                    workset = model.workset
+                  }
 
 init : Model
 init = 
-  {
-    currentSentenceIdx = 0,
-    currentAnswer = [],
-    workset = [
-      {
-        chinese = "先生，您貴姓？",
-        pinyin  = "xīan shēng nín guì xìng"
-      },
-      {
-        chinese = "他姓什麼？叫什麼名字？是哪國人？",
-        pinyin  = "tā xìng shén me jiào shén me míng zi shì nǎ guó rén"
-      },
-      {
-        chinese = "我是中國人，你是美國人，她呢？",
-        pinyin  = "wǒ shì zhōng guó rén nǐ shì měi guó rén tā ne"
-      },
-      {
-        chinese = "我姓王，不姓李，誰姓李？",
-        pinyin  = "wǒ xìng wáng bú xìng lǐ shéi xìng lǐ"
-      },
-      {
-        chinese = "王先生，你好，你是英國人嗎？",
-        pinyin  = "wáng xiān sheng nǐ hǎo nǐ shì yīng guó rén ma"
-      }
-    ]
-  }
+  initModel {
+              currentSentenceIdx = 0,
+              currentSentence = [], -- this will be properly initialized by initModel
+              workset = [
+                {
+                  chinese = "先生，您貴姓？",
+                  pinyin  = "xīan shēng nín guì xìng"
+                },
+                {
+                  chinese = "他姓什麼？叫什麼名字？是哪國人？",
+                  pinyin  = "tā xìng shén me jiào shén me míng zi shì nǎ guó rén"
+                },
+                {
+                  chinese = "我是中國人，你是美國人，她呢？",
+                  pinyin  = "wǒ shì zhōng guó rén nǐ shì měi guó rén tā ne"
+                },
+                {
+                  chinese = "我姓王，不姓李，誰姓李？",
+                  pinyin  = "wǒ xìng wáng bú xìng lǐ shéi xìng lǐ"
+                },
+                {
+                  chinese = "王先生，你好，你是英國人嗎？",
+                  pinyin  = "wáng xiān shēng nǐ hǎo nǐ shì yīng guó rén ma"
+                }
+              ]
+            } 0
 
 
 -- CHARACTER MODEL
 
 type alias CharacterModel = {
-  chinese : String,
-  pinyin  : Maybe String,
-  answer  : Maybe Int,
+  chinese  : String,
+  pinyin   : Maybe String,
+  answers  : List Int,
   selected : Bool
 }
 
@@ -97,25 +100,25 @@ validHanziIndexList chinese =
       filteredList = List.filter (\ (i, w) -> not (containsRegex "[，？。.,?a-zA-Z]" w)) indexedChineseSentenceList
   in  List.map (\ (i, w) -> i) filteredList
 
-sentenceModel : Sentence -> List Int -> List CharacterModel
-sentenceModel sentence answer = 
+initSentenceModel : Sentence -> List CharacterModel
+initSentenceModel sentence = 
   let hanziIndexList = validHanziIndexList sentence.chinese
       hanziIndexAndPinyin = Dict.fromList (List.map2 (,) hanziIndexList (List.indexedMap (,) (String.words sentence.pinyin)))
-      indexedAnswers = Dict.fromList (List.indexedMap (,) answer)
   in List.indexedMap (\ i c -> case Dict.get i hanziIndexAndPinyin of
                                  Nothing       -> { 
                                                     chinese  = c,
                                                     pinyin   = Nothing,
-                                                    answer   = Nothing,
+                                                    answers  = [],
                                                     selected = False
                                                   }
                                  Just (idx, p) -> { 
                                                     chinese  = c,
                                                     pinyin   = Just p,
-                                                    answer   = (Dict.get idx indexedAnswers),
-                                                    selected = (List.length answer) == idx
+                                                    answers  = [],
+                                                    selected = idx == 0
                                                   }
                      ) (String.split "" sentence.chinese)
+
 
 -- GRADE
 
@@ -133,7 +136,7 @@ grade : CharacterModel -> Grade
 grade characterModel =
   case characterModel.pinyin of
     Nothing -> DoNotGrade
-    Just p  -> case characterModel.answer of
+    Just p  -> case (List.head characterModel.answers) of
                  Nothing -> NotGraded
                  Just a  -> if (pinyinToTone p) == a then Correct else Incorrect
 
@@ -154,20 +157,36 @@ updatePinyin tone model =
   if isCurrentAnswerComplete model
   then model
   else {
-         currentAnswer      = List.append model.currentAnswer [tone],
+         currentSentence    = updateCurrentSentence model.currentSentence tone,
          workset            = model.workset,
          currentSentenceIdx = model.currentSentenceIdx
        }
 
+updateCurrentSentence : List CharacterModel -> Int -> List CharacterModel
+updateCurrentSentence sm tone =
+  let maybeCM = List.head sm
+      tsm = case List.tail sm of
+              Nothing -> []
+              Just s  -> s
+  in case maybeCM of
+      Nothing ->  []
+      Just cm ->  let newCM = {
+                                chinese  = cm.chinese,
+                                pinyin   = cm.pinyin,
+                                answers  = if cm.selected then tone :: cm.answers else cm.answers,
+                                selected = False
+                              }
+                      cmGrade = grade newCM
+                  in if cmGrade == NotGraded || cmGrade == Incorrect
+                     then { chinese = newCM.chinese, pinyin = newCM.pinyin, answers = newCM.answers, selected = True} :: tsm
+                     else newCM :: (updateCurrentSentence tsm tone)
+
 updateNextSentence : Model -> Model
 updateNextSentence model =
   if isCurrentAnswerComplete model
-  then {
-          currentAnswer      = [],
-          workset            = model.workset,
-          currentSentenceIdx = (model.currentSentenceIdx + 1) % (List.length model.workset)
-        }
+  then initModel model ((model.currentSentenceIdx + 1) % (List.length model.workset))
   else model
+
 
 -- VIEW
 
@@ -184,12 +203,7 @@ view address model =
   in div [ Html.Attributes.class "chineseSentence", onKeyPress, Html.Attributes.tabindex 0] (sentenceView model)
 
 sentenceView : Model -> List Html
-sentenceView model =
-  let sentence = currentSentence model
-      sModel = case sentence of
-                  Nothing -> []  -- If we have an invalid index, we'll display nothing
-                  Just s  -> sentenceModel s model.currentAnswer
-  in List.map characterModelToHtml sModel
+sentenceView model = List.map characterModelToHtml model.currentSentence
 
 characterModelToHtml : CharacterModel -> Html
 characterModelToHtml characterModel =
