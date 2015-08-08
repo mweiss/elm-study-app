@@ -1,43 +1,143 @@
-module CharacterModel (CharacterModel, Sentence, characterModel, tokenizePinyin) where
+module CharacterModel (CharacterModel, Sentence, characterModel, sentenceModel, tokenizePinyin, 
+  WorkbookProblem, workbookDecoder, workbookProblemToSentence, grade, inputToPinyin, Grade(..)) where
 
 import Dict exposing (Dict)
 import String
+import Regex exposing (Regex)
+import List
+import Char
+
+import Json.Decode exposing ((:=))
+import Json.Decode as JSD
 
 type alias Sentence =
-  {
-  , chinese : String
+  { chinese : String
   , pinyin  : String
   }
 
 type alias CharacterModel answer =
-  {
-  , chinese : String
+  { chinese : String
   , pinyin : Maybe String
-  , word : String
   , answers : List answer
   , selected : Bool
+  , currentAnswer : Maybe answer
   }
 
+type alias WorkbookProblem = {
+  chinese : String,
+  pinyin  : String,
+  chapter : Int,
+  book    : Int
+}
 
-pinyinRegex : Regex
-pinyinRegex = 
-  let 
-  in 
+-- GRADE
 
-pinyinSyllableToRegex pinyin =
-  let vowel = String.filter (\c -> Dict.member (fromChar c) vowelToTonesMap) pinyin
+type Grade = Correct | Incorrect | NotGraded | DoNotGrade
 
+grade : CharacterModel String -> Grade
+grade characterModel =
+  case characterModel.pinyin of
+    Nothing -> DoNotGrade
+    Just p  -> case (List.head characterModel.answers) of
+      Nothing -> NotGraded
+      Just a  -> if String.toLower p == (String.toLower (inputToPinyin a)) 
+        then Correct 
+        else Incorrect
+
+-- Helper method which takes user input and converts it into pinyin.  For example,
+-- this method will convert a string like wo3 to wǒ.  This method only returns valid
+-- pinyin if the input is valid pinyin.
+inputToPinyin : String -> String
+inputToPinyin input = 
+  let n = case String.toInt (String.right 1 input) of
+        Err _ -> -1
+        Ok number -> number
+      regexString = pinyinSyllableToRegexString (Regex.replace (Regex.AtMost 1) (Regex.regex "[0-9]$") (\_ -> "") input)
+  in  if n < 0 || n > 4
+        then input
+        else Regex.replace
+          (Regex.AtMost 1)
+          (Regex.regex "\\[.*\\]")
+          (\match -> String.slice (n + 1) (n + 2) match.match)
+          regexString
+
+workbookProblemToSentence : WorkbookProblem -> Sentence
+workbookProblemToSentence wp = {chinese = wp.chinese, pinyin = wp.pinyin}
+
+workbookDecoder : JSD.Decoder (List WorkbookProblem)
+workbookDecoder = 
+  JSD.list (JSD.object4 WorkbookProblem
+    ("chinese" := JSD.string)
+    ("pinyin" := JSD.string)
+    ("chapter" := JSD.int)
+    ("book" := JSD.int))
 
 -- Helper methods to transform a sentence into a character model
-characterModel : Sentence -> List CharacterModel
-characterModel sentence = [] -- TODO: implement
+
+sentenceModel : Sentence -> List (CharacterModel answer)
+sentenceModel sentence = List.map2 characterModel (String.split "" sentence.chinese) (tokenizePinyin sentence.pinyin)
+
+characterModel : String -> String -> CharacterModel answer
+characterModel chinese pinyin =
+  { chinese = chinese
+  , pinyin =  if (Regex.contains (Regex.regex "[,.?!]") pinyin) then Nothing else (Just pinyin)
+  , answers = []
+  , selected = False 
+  , currentAnswer = Nothing
+  }
 
 tokenizePinyin : String -> List String
-tokenizePinyin s = 
+tokenizePinyin s = List.filter (\v -> v /= " ") (List.map (\x -> x.match) (Regex.find Regex.All pinyinRegex s))
+
+pinyinRegex : Regex
+pinyinRegex = Regex.caseInsensitive (Regex.regex stringRegex)
+
+stringRegex = (String.join "|" (List.append ["[,.?! ]"] (List.foldr foldPinyinSyllables [] pinyinSyllables)))
+
+foldPinyinSyllables : String -> List String -> List String
+foldPinyinSyllables pinyin l =  List.append [pinyinSyllableToRegexString pinyin] l
+
+getDefaultToKey : String -> Dict String String -> String
+getDefaultToKey key dict = resolveMaybe key (Dict.get key dict)
+
+-- TODO: I actually want this to fail if it breaks.  This is a convenience so I don't
+-- have multi-line case statements everywhere doing the same thing
+resolveMaybe : v -> Maybe v -> v
+resolveMaybe default maybe =
+  case maybe of
+    Nothing -> default
+    Just value -> value
+
+pinyinSyllableToRegexString : String -> String
+pinyinSyllableToRegexString pinyin =
+  let vowel = String.filter (\c -> Dict.member (String.fromChar c) vowelToTonesMap) pinyin
+      vowelRegex = getDefaultToKey vowel pinyinVowelsToRegex
+  in  Regex.replace
+        (Regex.AtMost 1)
+        (Regex.regex vowel)
+        (\_ -> vowelRegex)
+        pinyin
+
+pinyinVowelsToRegex : Dict String String
+pinyinVowelsToRegex = List.foldr foldPinyinVowels Dict.empty pinyinVowels
+
+pinyinToRegex : String -> Int -> String
+pinyinToRegex s i =
+  let leftStr = String.left i s
+      rightStr = String.dropLeft (i + 1) s
+      vowel = String.slice i (i + 1) s
+      lookupValue = getDefaultToKey vowel vowelToTonesMap
+  in  leftStr ++ "[" ++ lookupValue ++ "]" ++ rightStr
+
+foldPinyinVowels : String -> Dict String String -> Dict String String
+foldPinyinVowels pinyin dict =
+  let pinyinIndex = (resolveMaybe 1 (List.head (String.indexes "*" pinyin))) - 1
+      key = String.filter (\c -> c /= '*') pinyin
+  in  (Dict.insert key (pinyinToRegex key pinyinIndex) dict)
 
 vowelToTonesMap : Dict String String
 vowelToTonesMap = 
-  Dict.fromMap
+  Dict.fromList
     [ ("a", "aāáǎà")
     , ("e", "eēéěè")
     , ("i", "iīíǐì")
@@ -52,32 +152,8 @@ vowelToTonesMap =
     , ("Ü", "ÜǕǗǙǛ")
     ]
 
-pinyinVowelsToRegex : Dict String String
-pinyinVowelsToRegex = List.foldr foldPinyinVowels Dict.empty 
-
-capitalize : String -> String
-capitalize s = String.append (String.capitalize (String.left 1 s)) (String.dropLeft 1 s)
-
-pinyinToRegex : String -> Index -> String
-pinyinToRegex s i =
-  let leftStr = String.left i s
-      rightStr = String.dropLeft (i + 1) s
-      vowel = String.slice i (i + 1) s,
-      lookup = Dict.get vowel vowelToTonesMap
-      lookupValue = case lookup of
-        Nothing -> "" -- TODO: Cannot happen. What's the fail value?
-        Just a -> a
-  in  leftStr ++ "[" ++ a ++ "]" ++ rightStr
-
-foldPinyinVowels : String -> Dict -> Dict
-foldPinyinVowels pinyin dict =
-  let pinyinIndex = (String.indexes pinyin "*") - 1
-      pinyinWithoutStar = String.filter (\c -> c != '*') pinyin
-      capitalizedPinyinWithoutStar = capitalize pinyinWithoutStar
-      pinyinToRegex = 
-
 pinyinVowels : List String
-pinyinVowels = 
+pinyinVowels =
   [ "a*", "o*", "e*", "i*", "er"
   , "a*i", "e*i", "a*o", "o*u"
   , "ia*", "ia*o", "ie*", "iu*", "io*"
@@ -85,8 +161,8 @@ pinyinVowels =
   , "üe*", "i*", "ü*"
   ]
 
-pinyinSounds = 
-  [ "o", "e", "er", "ai", "ao", "ou", "an", "en", "ang", "eng"
+pinyinSyllables = List.reverse <| List.sortBy String.length
+  [ "a", "o", "e", "er", "ai", "ao", "ou", "an", "en", "ang", "eng"
   , "yi", "ya", "yao", "ye", "you", "yan", "yin", "yang", "ying", "yong"
   , "wu", "wa", "wo","wai", "wei", "wan", "wen", "wang", "weng"
   , "yu", "yue", "yuan", "yun"
