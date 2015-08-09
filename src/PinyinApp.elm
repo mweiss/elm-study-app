@@ -11,6 +11,9 @@ import Task exposing (Task)
 import Date exposing (Date)
 import Dict exposing (Dict)
 import Time exposing (Time)
+import LocalStorage
+import Window
+import Results exposing (Results, CharacterResult, resultsToString, resultsFromString)
 import ListUtils exposing (find, forceTail)
 -- The main app loop... Note that there may be a way to remove
 -- some of this boiler plate bullshit like the port and external actions
@@ -19,11 +22,11 @@ import ListUtils exposing (find, forceTail)
 main =
   fst viewsAndTasks
 
-port requests : Signal (Task a ())
+port requests : Signal (Task LocalStorage.Error ())
 port requests = snd viewsAndTasks
 
 externalActions : Signal Action
-externalActions = Signal.constant NoAction
+externalActions = Signal.map (\x -> DimensionChange x) Window.dimensions
 
 viewsAndTasks =
   StartApp.start
@@ -44,16 +47,11 @@ type alias Lesson =
 type alias AppModel =
   { lesson : Lesson
   , results : Results
-  } 
-
-type alias Results = { words : Dict String (List CharacterResult) }
-
-type alias CharacterResult =
-  { date : Date
-  , correct : Bool
+  , loadState : LoadState
   }
 
-type Action = InputPinyin String | NoAction | NextSentence | NextCharacter
+type LoadState = NotLoaded | Loading | Loaded
+type Action = InputPinyin String | NoAction | NextSentence | NextCharacter | LoadResults Results | DimensionChange (Int, Int)
 
 selectFirst : List (CharacterModel answer) -> List (CharacterModel answer)
 selectFirst l = case List.head l of
@@ -78,16 +76,38 @@ init =
     , currentSentenceIdx = 0
     }
   , results = { words = Dict.empty }
+  , loadState = NotLoaded
   }
 
+transformStorageToAction : Maybe Results -> Task LocalStorage.Error Action
+transformStorageToAction r = 
+  case r of
+    Nothing -> Task.succeed (LoadResults { words = Dict.empty })
+    Just a -> Task.succeed (LoadResults a)
+
+initResults : Task LocalStorage.Error Action
+initResults = (LocalStorage.getJson Results.resultsDecoder "results") `Task.andThen` transformStorageToAction
+
 -- UPDATE
-update : LoopbackFun a Action -> Time.Time -> Action -> AppModel -> (AppModel, (Maybe (Task a ())))
+update : LoopbackFun LocalStorage.Error Action -> Time.Time -> Action -> AppModel -> (AppModel, (Maybe (Task LocalStorage.Error ())))
 update loopback t action model =
-  case action of
-    InputPinyin s -> (updateInputPinyin s model, Nothing)
-    NoAction -> (model, Nothing)
-    NextSentence -> (model, Nothing)
-    NextCharacter -> (tryToMoveToNextCharacter model t, Nothing)
+  case model.loadState of
+    NotLoaded -> ({model | loadState <- Loading}, Just (loopback initResults))
+    Loading -> case action of
+      LoadResults r -> ({ model | loadState <- Loaded, results <- r}, Nothing)
+      _ -> ({ model | loadState <- Loaded}, Nothing)
+    Loaded -> case action of
+      InputPinyin s -> (updateInputPinyin s model, Nothing)
+      NextCharacter -> let newModel = tryToMoveToNextCharacter model t
+        in (newModel, Just (loopback <| saveResults newModel.results))
+      _ -> (model, Nothing)
+
+saveResults : Results -> Task LocalStorage.Error Action
+saveResults r =
+  (LocalStorage.set "results" (Results.resultsToString r)) `Task.andThen` transformSaveToAction
+
+transformSaveToAction : String -> Task LocalStorage.Error Action
+transformSaveToAction s = Task.succeed NoAction
 
 -- grade the current answer
 -- record if it's correct or incorrect
@@ -176,6 +196,7 @@ updateInputPinyin input model =
   let lesson = model.lesson
   in { lesson = { lesson | currentSentence <- updateCurrentSentence input lesson.currentSentence}
      , results = model.results
+     , loadState = model.loadState
      }
 
 updateInput : String -> List (CharacterModel String) -> List (CharacterModel String)
@@ -198,17 +219,21 @@ updateCurrentSentence input sentence =
 
 view : Signal.Address Action -> AppModel -> Html
 view address model =
-  case model.lesson.currentSentence of
-    Nothing -> Html.text "Invalid sentence"
-    Just currentSentence -> 
-      Html.div [] 
-        [ sentenceView address currentSentence
-        , inputView address currentSentence
-        -- , debugView address model
-        ]
+  case model.loadState of
+    NotLoaded -> Html.text "not loaded"
+    Loading -> Html.text "loading"
+    Loaded ->
+      case model.lesson.currentSentence of
+        Nothing -> Html.text "Invalid sentence"
+        Just currentSentence -> 
+          Html.div [] 
+            [ sentenceView address currentSentence
+            , inputView address currentSentence
+            , debugView address model
+            ]
 
 debugView : Signal.Address Action -> AppModel -> Html
-debugView address model = Html.div [] [Html.text (toString model)]
+debugView address model = Html.div [] [Html.text (toString model.results)]
 
 sentenceView : Signal.Address Action -> List (CharacterModel String) -> Html
 sentenceView address model = Html.div [] <| List.map characterView model
@@ -216,12 +241,21 @@ sentenceView address model = Html.div [] <| List.map characterView model
 characterView : CharacterModel String -> Html
 characterView cm = 
   let className = case grade cm of
-        CharacterModel.Correct    -> "correct"
-        CharacterModel.Incorrect  -> "incorrect"
-        CharacterModel.NotGraded  -> "notGraded"
+        CharacterModel.Correct -> "correct"
+        CharacterModel.Incorrect -> "incorrect"
+        CharacterModel.NotGraded -> "notGraded"
         CharacterModel.DoNotGrade -> "doNotGrade"
       classList = if cm.selected then [(className, True), ("selected", True)] else [(className, True)]
-  in Html.span [Html.Attributes.classList classList] [Html.text cm.chinese]
+      pinyin = if not <| List.isEmpty cm.answers 
+        then case cm.pinyin of 
+          Nothing -> ""
+          Just p -> p
+        else ""
+  in  Html.div 
+        [ Html.Attributes.class "sentenceView"] 
+        [ Html.div [Html.Attributes.class "pinyin"] [Html.text pinyin]
+        , Html.div [Html.Attributes.classList classList] [Html.text cm.chinese]
+        ]
 
 inputView : Signal.Address Action -> List (CharacterModel String) -> Html
 inputView address model = 

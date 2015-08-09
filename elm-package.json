@@ -4,7 +4,7 @@
     "repository": "https://github.com/mweiss/elm-study-app.git",
     "license": "BSD3",
     "source-directories": [
-        "src"
+        "src", "dependencies/elm-localstorage", "dependencies/Native/elm-localstorage"
     ],
     "exposed-modules": [],
     "dependencies": {
@@ -15,5 +15,7 @@
         "deadfoxygrandpa/Elm-Test": "1.0.0 <= v < 2.0.0",
         "maxsnew/IO": "1.0.0 <= v < 2.0.0"
     },
-    "elm-version": "0.15.0 <= v < 0.16.0"
+    "elm-version": "0.15.0 <= v < 0.16.0",
+    "native-modules": true
+
 }
