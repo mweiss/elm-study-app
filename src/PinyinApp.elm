@@ -13,7 +13,7 @@ import Dict exposing (Dict)
 import Time exposing (Time)
 import LocalStorage
 import Window
-import Results exposing (Results, CharacterResult, resultsToString, resultsFromString)
+import Results exposing (Results, CharacterResult, resultsToString, resultsFromString, shouldReviewSentence)
 import ListUtils exposing (find, forceTail)
 -- The main app loop... Note that there may be a way to remove
 -- some of this boiler plate bullshit like the port and external actions
@@ -94,7 +94,13 @@ update loopback t action model =
   case model.loadState of
     NotLoaded -> ({model | loadState <- Loading}, Just (loopback initResults))
     Loading -> case action of
-      LoadResults r -> ({ model | loadState <- Loaded, results <- r}, Nothing)
+      LoadResults r ->
+        ( { model | loadState <- Loaded,
+                    results <- r,
+                    lesson <- updateLesson (findNextLessonSentenceIndex model.lesson r t) model.lesson
+          }
+        , Nothing
+        )
       _ -> ({ model | loadState <- Loaded}, Nothing)
     Loaded -> case action of
       InputPinyin s -> (updateInputPinyin s model, Nothing)
@@ -121,17 +127,23 @@ tryToMoveToNextCharacter model time =
           currentSentenceWithAnswer = addAnswerToSentence currentSentence
           lessonWithAnswer = { lesson | currentSentence <- Just currentSentenceWithAnswer }
           characterResult = gradeSentence currentSentenceWithAnswer time
-          updatedLesson = if isCorrect characterResult then moveToNextCharacter lessonWithAnswer else lessonWithAnswer
-          updatedResults = updateResults results characterResult
+          updatedResults = if not (alreadyAnswered currentSentenceWithAnswer) then updateResults results characterResult else results
+          updatedLesson = if isCorrect characterResult then (moveToNextCharacter lessonWithAnswer updatedResults time) else lessonWithAnswer
       in { model | lesson <- updatedLesson, results <- updatedResults}
+
+alreadyAnswered : List (CharacterModel answer) -> Bool
+alreadyAnswered sentence =
+  case List.head (List.filter (\x -> x.selected) sentence) of
+    Nothing -> True
+    Just cm -> List.length cm.answers > 1
 
 isCorrect : Maybe (String, CharacterResult) -> Bool
 isCorrect cr = case cr of
   Nothing -> False
   Just (_ , v) -> v.correct
 
-moveToNextCharacter : Lesson -> Lesson
-moveToNextCharacter lesson =
+moveToNextCharacter : Lesson -> Results -> Time.Time -> Lesson
+moveToNextCharacter lesson results time =
   case lesson.currentSentence of
     Nothing -> lesson
     Just currentSentence ->
@@ -156,10 +168,25 @@ moveToNextCharacter lesson =
           fullSentence = deselectedSegment ++ selectedSegment
       in if not (List.isEmpty (List.filter (\x -> x.selected) fullSentence))
          then {lesson | currentSentence <- Just fullSentence}
-         else updateLesson (findNextLessonSentenceIndex lesson) lesson
+         else updateLesson (findNextLessonSentenceIndex lesson results time) lesson
 
-findNextLessonSentenceIndex : Lesson -> Int
-findNextLessonSentenceIndex lesson = (lesson.currentSentenceIdx + 1) % (List.length lesson.sentences)
+findNextLessonSentenceIndex : Lesson -> Results -> Time.Time -> Int
+findNextLessonSentenceIndex lesson results time =
+  let nextIndex = (lesson.currentSentenceIdx + 1) % (List.length lesson.sentences)
+      rotatedSentenceList = (List.drop nextIndex lesson.sentences) ++ (List.take nextIndex lesson.sentences)
+      indexOffset = fst <| List.foldr
+        (\sentence indexes ->
+          case indexes of
+            (-1, a) ->
+              if shouldReviewSentence (sentenceModel sentence) results (Date.fromTime time)
+                then (a, a + 1)
+                else (-1, a + 1)
+            (_, _)  -> indexes
+        )
+        (-1, 0)
+        rotatedSentenceList
+      nextValidIndex = indexOffset + nextIndex
+  in  if nextValidIndex == -1 then nextIndex else nextValidIndex 
 
 updateResults : Results -> Maybe (String, CharacterResult) -> Results
 updateResults results cr =
@@ -221,7 +248,7 @@ view : Signal.Address Action -> AppModel -> Html
 view address model =
   case model.loadState of
     NotLoaded -> Html.text "not loaded"
-    Loading -> Html.text "loading"
+    Loading -> Html.text "loading..."
     Loaded ->
       case model.lesson.currentSentence of
         Nothing -> Html.text "Invalid sentence"
@@ -229,11 +256,11 @@ view address model =
           Html.div [] 
             [ sentenceView address currentSentence
             , inputView address currentSentence
-            , debugView address model
+            -- , debugView address model
             ]
 
 debugView : Signal.Address Action -> AppModel -> Html
-debugView address model = Html.div [] [Html.text (toString model.results)]
+debugView address model = Html.div [] [Html.text (toString (findNextLessonSentenceIndex model.lesson model.results 0, model.results))]
 
 sentenceView : Signal.Address Action -> List (CharacterModel String) -> Html
 sentenceView address model = Html.div [] <| List.map characterView model
@@ -267,4 +294,5 @@ inputView address model =
           Nothing -> ""
           Just a -> a
   in  Html.input [changeHandler, enterHandler, Html.Attributes.autofocus True, Html.Attributes.value currentAnswer] []
+
 
