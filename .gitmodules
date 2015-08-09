@@ -1,0 +1,3 @@
+[submodule "dependencies/elm-localstorage"]
+	path = dependencies/elm-localstorage
+	url = https://github.com/xdissent/elm-localstorage
