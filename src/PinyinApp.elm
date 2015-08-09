@@ -11,6 +11,7 @@ import Task exposing (Task)
 import Date exposing (Date)
 import Dict exposing (Dict)
 import Time exposing (Time)
+import Regex
 import LocalStorage
 import Window
 import Results exposing (Results, CharacterResult, resultsToString, resultsFromString, shouldReviewSentence)
@@ -48,6 +49,7 @@ type alias AppModel =
   { lesson : Lesson
   , results : Results
   , loadState : LoadState
+  , now : Time
   }
 
 type LoadState = NotLoaded | Loading | Loaded
@@ -77,6 +79,7 @@ init =
     }
   , results = { words = Dict.empty }
   , loadState = NotLoaded
+  , now = 0
   }
 
 transformStorageToAction : Maybe Results -> Task LocalStorage.Error Action
@@ -92,15 +95,18 @@ initResults = (LocalStorage.getJson Results.resultsDecoder "results") `Task.andT
 update : LoopbackFun LocalStorage.Error Action -> Time.Time -> Action -> AppModel -> (AppModel, (Maybe (Task LocalStorage.Error ())))
 update loopback t action model =
   case model.loadState of
-    NotLoaded -> ({model | loadState <- Loading}, Just (loopback initResults))
+    NotLoaded -> ({model | loadState <- Loading, now <- t}, Just (loopback initResults))
     Loading -> case action of
       LoadResults r ->
-        ( { model | loadState <- Loaded,
-                    results <- r,
-                    lesson <- updateLesson (findNextLessonSentenceIndex model.lesson r t) model.lesson
-          }
-        , Nothing
-        )
+        let lesson = model.lesson
+        in
+          ( { model | loadState <- Loaded,
+                      results <- r,
+                      lesson <- updateLesson (findNextLessonSentenceIndex {lesson | currentSentenceIdx <- -1} r t) lesson,
+                      now <- t
+            }
+          , Nothing
+          )
       _ -> ({ model | loadState <- Loaded}, Nothing)
     Loaded -> case action of
       InputPinyin s -> (updateInputPinyin s model, Nothing)
@@ -143,7 +149,7 @@ isCorrect cr = case cr of
   Just (_ , v) -> v.correct
 
 moveToNextCharacter : Lesson -> Results -> Time.Time -> Lesson
-moveToNextCharacter lesson results time =
+moveToNextCharacter lesson results now =
   case lesson.currentSentence of
     Nothing -> lesson
     Just currentSentence ->
@@ -168,17 +174,17 @@ moveToNextCharacter lesson results time =
           fullSentence = deselectedSegment ++ selectedSegment
       in if not (List.isEmpty (List.filter (\x -> x.selected) fullSentence))
          then {lesson | currentSentence <- Just fullSentence}
-         else updateLesson (findNextLessonSentenceIndex lesson results time) lesson
+         else updateLesson (findNextLessonSentenceIndex lesson results now) lesson
 
 findNextLessonSentenceIndex : Lesson -> Results -> Time.Time -> Int
-findNextLessonSentenceIndex lesson results time =
+findNextLessonSentenceIndex lesson results now =
   let nextIndex = (lesson.currentSentenceIdx + 1) % (List.length lesson.sentences)
       rotatedSentenceList = (List.drop nextIndex lesson.sentences) ++ (List.take nextIndex lesson.sentences)
-      indexOffset = fst <| List.foldr
+      indexOffset = fst <| List.foldl
         (\sentence indexes ->
           case indexes of
             (-1, a) ->
-              if shouldReviewSentence (sentenceModel sentence) results (Date.fromTime time)
+              if shouldReviewSentence (sentenceModel sentence) results (Date.fromTime now)
                 then (a, a + 1)
                 else (-1, a + 1)
             (_, _)  -> indexes
@@ -224,6 +230,7 @@ updateInputPinyin input model =
   in { lesson = { lesson | currentSentence <- updateCurrentSentence input lesson.currentSentence}
      , results = model.results
      , loadState = model.loadState
+     , now = model.now
      }
 
 updateInput : String -> List (CharacterModel String) -> List (CharacterModel String)
@@ -260,10 +267,18 @@ view address model =
             ]
 
 debugView : Signal.Address Action -> AppModel -> Html
-debugView address model = Html.div [] [Html.text (toString (findNextLessonSentenceIndex model.lesson model.results 0, model.results))]
+debugView address model = 
+  let lesson = model.lesson
+      currentSentence = case lesson.currentSentence of
+        Nothing -> []
+        Just a -> a
+  in  Html.div [] [Html.text (toString 
+    (shouldReviewSentence currentSentence model.results (Date.fromTime model.now), 
+      model.now,
+      model.results))]
 
 sentenceView : Signal.Address Action -> List (CharacterModel String) -> Html
-sentenceView address model = Html.div [] <| List.map characterView model
+sentenceView address model = Html.div [Html.Attributes.class "sentenceView"] <| List.map characterView model
 
 characterView : CharacterModel String -> Html
 characterView cm = 
@@ -279,14 +294,17 @@ characterView cm =
           Just p -> p
         else ""
   in  Html.div 
-        [ Html.Attributes.class "sentenceView"] 
+        [ Html.Attributes.class "characterView"] 
         [ Html.div [Html.Attributes.class "pinyin"] [Html.text pinyin]
         , Html.div [Html.Attributes.classList classList] [Html.text cm.chinese]
         ]
 
 inputView : Signal.Address Action -> List (CharacterModel String) -> Html
 inputView address model = 
-  let changeHandler = Html.Events.on "input" Html.Events.targetValue (\str -> Signal.message address (InputPinyin str))
+  let changeHandler = Html.Events.on 
+        "input" 
+        Html.Events.targetValue 
+        (\str -> Signal.message address (if Regex.contains (Regex.regex " $") str then NextCharacter else (InputPinyin str)))
       enterHandler  = Html.Events.onKeyDown address (\i -> if i == 13 then NextCharacter else NoAction)
       currentAnswer = case find (\x -> x.selected) model of
         Nothing -> "not found"
